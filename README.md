@@ -1,8 +1,9 @@
 # Forcivate_Interview_Task_Habiba_Elsayed
 Technical Assessment for the Full Stack Internship Position
 # Forcivate Comment-Response Engine
-
-A C++/Python hybrid service that ingests social media posts and comments, drafts replies using a local LLM, runs them through an automated safety gate, and routes them through a human approval CLI before mock-publishing.
+A C++/Python hybrid service that ingests social media posts and comments, drafts
+replies using a local LLM, runs them through an automated safety gate, and routes
+them through a human approval CLI before mock-publishing.
 
 ---
 
@@ -17,15 +18,14 @@ Forcivate Project/
 │   │   ├── DraftEngine.cpp / .h      # pybind11 bridge to Python LLM layer
 │   │   ├── SafetyGate.cpp / .h       # injection detection + sanitization
 │   │   └── ReviewQueue.cpp / .h      # interactive CLI reviewer
-│   └── config/
-│       └── VoiceConfig.cpp / .h      # platform-aware brand voice config
-├── python/
-│   ├── llm_adapter.py                # local GGUF model wrapper
-│   └── learning_examples.json        # approved replies used as few-shot examples
+│   ├── config/
+│   │   └── VoiceConfig.cpp / .h      # platform-aware brand voice config
+│   └── python/
+│       ├── llm_adapter.py            # local GGUF model wrapper
+│       └── models/
+│           └── model.gguf            # local LLM model file (not in repo)
 ├── data/
 │   └── comments.json                 # input fixture
-├── models/
-│   └── model.gguf                    # local LLM model file (not in repo)
 ├── output/                           # generated at runtime
 │   ├── drafts.json
 │   ├── approvals.json
@@ -55,7 +55,7 @@ pip install pybind11 llama-cpp-python
 Place your GGUF model file at:
 
 ```
-models/model.gguf
+cpp/python/models/model.gguf
 ```
 
 ---
@@ -69,7 +69,8 @@ cmake ..
 cmake --build . --config Release
 ```
 
-The executable is output to `cpp/build/Release/forcivate.exe` on Windows or `cpp/build/forcivate` on Linux/macOS.
+The executable is output to `cpp/build/Release/forcivate.exe` on Windows or
+`cpp/build/forcivate` on Linux/macOS.
 
 ---
 
@@ -108,14 +109,14 @@ comments.json
   [2] Safety Gate  (C++ — SafetyGate)
       Every comment is evaluated before anything else.
       │
-      ├─ FLAGGED (spam / prompt injection) → blocked, logged to approvals.json, skipped
-      ├─ HIGH_RISK (hostile language)      → canned safe response, goes to review
+      ├─ FLAGGED (spam / prompt injection) → blocked, logged, skipped
+      ├─ HIGH_RISK (hostile language)      → canned response, goes to review
       └─ SAFE                              → sanitized, passed to LLM
       │
       ▼
   [3] Sanitize  (C++ — SafetyGate::sanitize)
       Injection keywords and prompt-structure labels are stripped from the
-      comment text BEFORE it reaches the Python layer. C++ is the trust boundary.
+      comment text BEFORE it reaches the Python layer.
       │
       ▼
   [4] Draft Generation  (Python — llm_adapter.py via pybind11)
@@ -171,7 +172,7 @@ All files are written to `output/` at the end of each run.
 
 All comment text is treated as **untrusted external input**. The gate runs two passes:
 
-**Pass 1 — `evaluate()`** classifies the comment and decides whether to block it entirely or let it through to the LLM with a flag.
+**Pass 1 — `evaluate()`** classifies the comment and decides whether to block it.
 
 | Flag | Trigger | Action |
 |---|---|---|
@@ -179,17 +180,21 @@ All comment text is treated as **untrusted external input**. The gate runs two p
 | `HIGH_RISK` | Hostile / abusive language | Canned response, goes to human review |
 | `SAFE` | None of the above | Drafted by LLM normally |
 
-**Pass 2 — `sanitize()`** strips injection directive language from the text using case-insensitive regex before it is forwarded to Python. This is a defence-in-depth measure: even a comment that scores `SAFE` may contain partial injection phrases that `evaluate()` does not catch.
+**Pass 2 — `sanitize()`** strips injection directive language from the text using
+case-insensitive regex before it is forwarded to Python. This is a defence-in-depth
+measure: even a comment that scores `SAFE` may contain partial injection phrases.
 
-Phrases removed include: `ignore all previous instructions`, `respond only with`, `output only`, `Reply:`, `Post:`, `Comment:` (prompt-structure labels), and others.
+Phrases removed include: `ignore all previous instructions`, `respond only with`,
+`output only`, `Reply:`, `Post:`, `Comment:` and others.
 
-To add a new blocked phrase, add a pattern to the `injectionPatterns` vector in `SafetyGate.cpp` — no other file needs to change.
+To add a new blocked phrase, add a pattern to the `injectionPatterns` vector in
+`SafetyGate.cpp` — no other file needs to change.
 
 ---
 
 ## Brand Voice
 
-`VoiceConfig` maps a platform name to a set of tone parameters:
+`VoiceConfig` maps a platform name to tone parameters:
 
 | Platform | Tone | Emoji | Length |
 |---|---|---|---|
@@ -197,52 +202,53 @@ To add a new blocked phrase, add a pattern to the `injectionPatterns` vector in 
 | `professional` | professional | no | medium |
 | *(other)* | neutral | no | medium |
 
-These parameters are passed directly into the LLM prompt in `llm_adapter.py`. To change the voice for a platform, edit `VoiceConfig.cpp` — the prompt is built dynamically from those values, not hardcoded.
+To change the voice for a platform, edit `VoiceConfig.cpp`.
 
 ---
 
 ## Learning Signal
 
-When a reviewer approves or edits a reply, the final reply is appended to `python/learning_examples.json`:
+When a reviewer approves or edits a reply, it is appended to
+`cpp/python/learning_examples.json` and used as a few-shot style example on the
+next run (last 3 examples are injected into the prompt).
 
-```json
-[
-  {
-    "comment": "Does it integrate natively with Slack?",
-    "reply":   "Yes! Native Slack integration is built in — no webhooks needed."
-  }
-]
-```
-
-On the next run, the three most recent examples are injected into the LLM prompt as few-shot style references. This lets the model gradually align with the reviewer's preferred voice without retraining.
-
-> **Important:** if the model starts generating malformed replies (e.g. fake `Post:/Comment:` continuations), clear `learning_examples.json` back to `[]`. Corrupted entries from earlier bad generations will poison subsequent prompts.
+> **Important:** if the model starts generating malformed replies, clear
+> `learning_examples.json` back to `[]`. Corrupted entries from bad generations
+> will poison subsequent prompts.
 
 ---
 
 ## Design Decisions
 
 **Why C++ for the core and Python for the LLM?**
-The safety gate and review workflow are deterministic control-flow logic — C++ is the right tool and keeps the trust boundary explicit. The LLM layer changes frequently (model, library, prompt format) and is much easier to iterate on in Python. pybind11 bridges them cleanly with no IPC overhead.
+The safety gate and review workflow are deterministic control-flow logic — C++ is
+the right tool and keeps the trust boundary explicit. The LLM layer changes
+frequently and is easier to iterate on in Python. pybind11 bridges them with no
+IPC overhead.
 
-**Why a local GGUF model instead of an API?**
-The assignment requires the project to run on a standard laptop without cloud infrastructure. A local GGUF model via `llama-cpp-python` satisfies this with no API key required.
+**Why a local GGUF model?**
+The assignment requires the project to run on a standard laptop without cloud
+infrastructure. A local GGUF model via `llama-cpp-python` satisfies this with no
+API key required.
 
 **Why is `sanitize()` separate from `evaluate()`?**
-`evaluate()` is a classification decision — it answers "is this comment dangerous enough to block?" `sanitize()` is a hardening step — it answers "even if we let this through, can we strip anything that could manipulate the model?" Keeping them separate makes each responsibility testable independently.
+`evaluate()` classifies — it answers "is this dangerous enough to block?"
+`sanitize()` hardens — it answers "can we strip anything that could manipulate
+the model?" Keeping them separate makes each responsibility testable independently.
 
 ---
 
 ## Known Limitations & What I Would Improve Next
 
-- **Keyword-based safety gate** — the injection and hostility detection uses fixed string matching. A short classifier model (even a small fine-tuned BERT) would catch paraphrased injections that keyword lists miss.
-
-- **Canned hostile response** — hostile comments currently get a hardcoded reply rather than an LLM-drafted one. A better approach would be to pass them to the LLM with a `HIGH_RISK` system instruction that constrains the tone, and still send the result to mandatory human review.
-
-- **No duplicate prevention on `published.json`** — if the binary is run twice on the same dataset, entries are appended again. A simple set-check on `comment_id` before writing would fix this.
-
-- **`learning_examples.json` has no size cap** — it grows unboundedly. A sliding window (keep last N) or a review step that curates examples would prevent prompt bloat over time.
-
-- **Single-threaded** — comments are drafted sequentially. For larger datasets, drafting could be parallelised since each comment is independent.
-
-- **No triage step** — every comment gets a draft. A pre-filter that skips comments not worth replying to (pure emoji reactions, unrelated spam that slipped through, etc.) would reduce unnecessary LLM calls.
+- **Keyword-based safety gate** — a small classifier model would catch paraphrased
+  injections that keyword lists miss.
+- **Canned hostile response** — hostile comments get a hardcoded reply rather than
+  an LLM-drafted one constrained by a system instruction.
+- **No duplicate prevention on `published.json`** — a set-check on `comment_id`
+  before writing would fix this.
+- **`learning_examples.json` has no size cap** — a sliding window (keep last N)
+  would prevent prompt bloat over time.
+- **Single-threaded** — comments are drafted sequentially; parallelisation would
+  help for larger datasets.
+- **No triage step** — every comment gets a draft regardless of whether it warrants
+  a reply.
